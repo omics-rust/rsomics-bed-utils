@@ -1,11 +1,11 @@
 [package]
 name = "rsomics-bed-utils"
 version = "0.1.0"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/omics-rust/rsomics-world"
+authors = ["Zane Leong <efd@live.com>"]
 description = "BED utility toolkit — sort, merge, intersect, subtract, complement, stats, convert, and 40+ more operations"
 
 [[bin]]
@@ -13,15 +13,13 @@ name = "rsomics-bed-utils"
 path = "src/main.rs"
 
 [dependencies]
-rsomics-common = { path = "../../../foundation/rsomics-common", version = "0.6" }
-rsomics-help = { path = "../../../foundation/rsomics-help", version = "0.3" }
-rsomics-intervals = { path = "../../../foundation/rsomics-intervals", version = "0.1" }
-rsomics-fasta-index = { path = "../rsomics-fasta-index", version = "0.1" }
-clap = { workspace = true, features = ["derive"] }
+rsomics-common = { version = "0.6" }
+rsomics-help = { version = "0.3" }
+rsomics-intervals = { version = "0.1" }
+rsomics-fasta-index = { version = "0.1" }
+clap = { version = "4", features = ["derive"] }
 needletail = "0.6"
 rand = "0.8"
-serde = { workspace = true }
-serde_json = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
-[lints]
-workspace = true
