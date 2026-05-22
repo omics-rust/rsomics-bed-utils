@@ -45,6 +45,9 @@ pub fn intersect(a_path: &Path, b_path: &Path, output: &mut dyn Write) -> Result
         let chrom = std::str::from_utf8(chrom).map_err(|e| {
             RsomicsError::InvalidInput(format!("BED line {lineno}: non-UTF8 chrom: {e}"))
         })?;
+        // A's columns past end (BED4+: name/score/strand/...), kept verbatim and
+        // re-emitted per overlap with the coordinates replaced — matches bedtools.
+        let rest = nth_tab(line, 3).map_or(&b""[..], |i| &line[i..]);
 
         hits.clear();
         index.for_each_overlap(chrom, start, end, |bi| {
@@ -56,11 +59,22 @@ pub fn intersect(a_path: &Path, b_path: &Path, output: &mut dyn Write) -> Result
         });
         hits.sort_unstable();
         for &(lo, hi) in &hits {
-            writeln!(out, "{chrom}\t{lo}\t{hi}").map_err(RsomicsError::Io)?;
+            write!(out, "{chrom}\t{lo}\t{hi}").map_err(RsomicsError::Io)?;
+            out.write_all(rest).map_err(RsomicsError::Io)?;
+            out.write_all(b"\n").map_err(RsomicsError::Io)?;
         }
     }
     out.flush().map_err(RsomicsError::Io)?;
     Ok(())
+}
+
+/// Byte index of the `n`-th tab (1-based) in `line`, or None if there are fewer.
+fn nth_tab(line: &[u8], n: usize) -> Option<usize> {
+    line.iter()
+        .enumerate()
+        .filter(|&(_, &b)| b == b'\t')
+        .map(|(i, _)| i)
+        .nth(n - 1)
 }
 
 fn parse_field(f: Option<&[u8]>, lineno: usize, what: &str) -> Result<u64> {
