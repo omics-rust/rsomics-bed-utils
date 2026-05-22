@@ -1,5 +1,6 @@
 pub mod annotate;
 pub mod bed_sort;
+pub mod byteparse;
 pub mod chroms;
 pub mod chroms_sizes;
 pub mod closest;

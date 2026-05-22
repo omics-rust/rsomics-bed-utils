@@ -5,12 +5,14 @@ use std::path::Path;
 use rsomics_common::{Result, RsomicsError};
 use rsomics_intervals::{IntervalIndex, IntervalSet, bed};
 
+use crate::ops::byteparse::{is_skippable, parse_coord, rest_after_end};
+
 /// Report the intersected region of every A interval with each overlapping B
 /// interval (`bedtools intersect -a A -b B` default). B is read once and put in
 /// a coitrees index; A is streamed as byte slices and queried against it, so
 /// the large side never builds per-record `Interval`/`IntervalSet` or clones
-/// chrom strings. Output is A-file order, and per-A overlaps are emitted in
-/// coordinate order — byte-identical to bedtools.
+/// chrom strings. A's columns past end are preserved per overlap. Output is
+/// A-file order; per-A overlaps are emitted in coordinate order.
 pub fn intersect(a_path: &Path, b_path: &Path, output: &mut dyn Write) -> Result<()> {
     let b_ivs = bed::read(File::open(b_path).map_err(RsomicsError::Io)?)?;
     let b_set: IntervalSet = b_ivs.into_iter().collect();
@@ -30,24 +32,18 @@ pub fn intersect(a_path: &Path, b_path: &Path, output: &mut dyn Write) -> Result
             Some(b'\r') => &raw[..raw.len() - 1],
             _ => raw,
         };
-        if line.is_empty()
-            || line[0] == b'#'
-            || line.starts_with(b"track")
-            || line.starts_with(b"browser")
-        {
+        if is_skippable(line) {
             continue;
         }
         lineno += 1;
         let mut fields = line.split(|&c| c == b'\t');
         let chrom = fields.next().unwrap_or(b"");
-        let start = parse_field(fields.next(), lineno, "start")?;
-        let end = parse_field(fields.next(), lineno, "end")?;
+        let start = parse_coord(fields.next(), lineno, "start")?;
+        let end = parse_coord(fields.next(), lineno, "end")?;
         let chrom = std::str::from_utf8(chrom).map_err(|e| {
             RsomicsError::InvalidInput(format!("BED line {lineno}: non-UTF8 chrom: {e}"))
         })?;
-        // A's columns past end (BED4+: name/score/strand/...), kept verbatim and
-        // re-emitted per overlap with the coordinates replaced — matches bedtools.
-        let rest = nth_tab(line, 3).map_or(&b""[..], |i| &line[i..]);
+        let rest = rest_after_end(line);
 
         hits.clear();
         index.for_each_overlap(chrom, start, end, |bi| {
@@ -66,27 +62,4 @@ pub fn intersect(a_path: &Path, b_path: &Path, output: &mut dyn Write) -> Result
     }
     out.flush().map_err(RsomicsError::Io)?;
     Ok(())
-}
-
-/// Byte index of the `n`-th tab (1-based) in `line`, or None if there are fewer.
-fn nth_tab(line: &[u8], n: usize) -> Option<usize> {
-    line.iter()
-        .enumerate()
-        .filter(|&(_, &b)| b == b'\t')
-        .map(|(i, _)| i)
-        .nth(n - 1)
-}
-
-fn parse_field(f: Option<&[u8]>, lineno: usize, what: &str) -> Result<u64> {
-    let bytes =
-        f.ok_or_else(|| RsomicsError::InvalidInput(format!("BED line {lineno}: missing {what}")))?;
-    std::str::from_utf8(bytes)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or_else(|| {
-            RsomicsError::InvalidInput(format!(
-                "BED line {lineno}: bad {what} {:?}",
-                String::from_utf8_lossy(bytes)
-            ))
-        })
 }

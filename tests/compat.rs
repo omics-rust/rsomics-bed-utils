@@ -121,3 +121,29 @@ fn intersect_matches_bedtools() {
     });
     assert_eq!(sorted_lines(&ours), sorted_lines(&theirs));
 }
+
+// `subtract` (gaps of A not covered by B) must be byte-identical to
+// `bedtools subtract` — A-file order, gaps in coordinate order, columns kept.
+#[test]
+fn subtract_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("small.bed");
+    let b = golden("b.bed");
+    let ours = run({
+        let mut c = bin();
+        c.arg("subtract").arg("-a").arg(&a).arg("-b").arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("subtract").arg("-a").arg(&a).arg("-b").arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs)
+    );
+}
