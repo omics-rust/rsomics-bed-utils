@@ -328,6 +328,48 @@ fn slop() {
     assert_eq!(lines.len(), 6);
 }
 
+// ── new ops (cluster, groupby, multiinter) ────────────────────────
+
+#[test]
+fn cluster() {
+    let s = run_ok(bin().args(["cluster", "-i"]).arg(golden("cluster.bed")));
+    let lines: Vec<&str> = s.trim().lines().collect();
+    assert_eq!(lines.len(), 5);
+    // Last column is cluster ID; first two intervals on chr1 share cluster 1.
+    assert!(lines[0].ends_with('\t') || lines[0].contains('\t'));
+    let last_col = |line: &str| line.split('\t').next_back().unwrap_or("").to_string();
+    assert_eq!(last_col(lines[0]), "1");
+    assert_eq!(last_col(lines[1]), "1");
+    assert_eq!(last_col(lines[2]), "2");
+}
+
+#[test]
+fn groupby_sum() {
+    let s = run_ok(
+        bin()
+            .args(["groupby", "-i"])
+            .arg(golden("groupby.bed"))
+            .args(["-g", "1", "-c", "5", "--op", "sum"]),
+    );
+    assert!(s.contains("chr1\t600"));
+    assert!(s.contains("chr2\t680"));
+}
+
+#[test]
+fn multiinter_two_files() {
+    let s = run_ok(
+        bin()
+            .args(["multiinter", "-i"])
+            .arg(golden("multiinter_a.bed"))
+            .arg(golden("multiinter_b.bed")),
+    );
+    let lines: Vec<&str> = s.trim().lines().collect();
+    // 5 chr1 segments + 3 chr2 segments
+    assert_eq!(lines.len(), 8);
+    // Each line has at least 7 tab-separated fields (chrom+start+end+count+list+2 indicators)
+    assert!(lines.iter().all(|l| l.split('\t').count() == 7));
+}
+
 // ── two-BED ops ───────────────────────────────────────────────────
 
 #[test]

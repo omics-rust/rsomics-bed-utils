@@ -122,6 +122,184 @@ fn intersect_matches_bedtools() {
     assert_eq!(sorted_lines(&ours), sorted_lines(&theirs));
 }
 
+// `cluster` must be byte-identical to `bedtools cluster` (default d=0 and d=20).
+#[test]
+fn cluster_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let input = golden("cluster.bed");
+
+    // default distance (0)
+    let ours = run({
+        let mut c = bin();
+        c.arg("cluster").arg("-i").arg(&input);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("cluster").arg("-i").arg(&input);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "cluster d=0 mismatch"
+    );
+
+    // with -d 20: geneC (80-100) is 30 bp from geneB (20-50), not within 20 → own cluster;
+    // geneD and geneE on chr2 are 20 bp apart (60-40=20) → same cluster.
+    let ours_d20 = run({
+        let mut c = bin();
+        c.arg("cluster").arg("-i").arg(&input).arg("-d").arg("20");
+        c
+    });
+    let theirs_d20 = run({
+        let mut c = Command::new("bedtools");
+        c.arg("cluster").arg("-i").arg(&input).arg("-d").arg("20");
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours_d20),
+        String::from_utf8_lossy(&theirs_d20),
+        "cluster d=20 mismatch"
+    );
+}
+
+// `groupby` must be byte-identical to `bedtools groupby` for the core ops.
+// bedtools formats integer-valued results without a decimal and non-integer
+// results with 10 significant figures (%.10g).
+#[test]
+fn groupby_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let input = golden("groupby.bed");
+
+    let ops = [
+        "sum", "mean", "min", "max", "count", "collapse", "distinct", "first", "last",
+    ];
+    for op in ops {
+        let ours = run({
+            let mut c = bin();
+            c.arg("groupby")
+                .arg("-i")
+                .arg(&input)
+                .arg("-g")
+                .arg("1")
+                .arg("-c")
+                .arg("5")
+                .arg("--op")
+                .arg(op);
+            c
+        });
+        let theirs = run({
+            let mut c = Command::new("bedtools");
+            c.arg("groupby")
+                .arg("-i")
+                .arg(&input)
+                .arg("-g")
+                .arg("1")
+                .arg("-c")
+                .arg("5")
+                .arg("-o")
+                .arg(op);
+            c
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&ours),
+            String::from_utf8_lossy(&theirs),
+            "groupby op={op} mismatch"
+        );
+    }
+}
+
+// `multiinter` must be byte-identical to `bedtools multiinter`.
+// Output columns: chrom start end count list [0|1 per file].
+#[test]
+fn multiinter_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("multiinter_a.bed");
+    let b = golden("multiinter_b.bed");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("multiinter").arg("-i").arg(&a).arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("multiinter").arg("-i").arg(&a).arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "multiinter mismatch"
+    );
+}
+
+// `multiinter` with intra-file overlapping intervals must produce the same
+// maximal segments as `bedtools multiinter` (2-file overlapping case).
+#[test]
+fn multiinter_overlap_2file_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("multiinter_overlap_a.bed");
+    let b = golden("multiinter_overlap_b.bed");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("multiinter").arg("-i").arg(&a).arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("multiinter").arg("-i").arg(&a).arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "multiinter overlapping 2-file mismatch"
+    );
+}
+
+// `multiinter` with intra-file overlapping intervals, 3-file case.
+#[test]
+fn multiinter_overlap_3file_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("multiinter_overlap_a.bed");
+    let b = golden("multiinter_overlap_b.bed");
+    let c_file = golden("multiinter_overlap_c.bed");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("multiinter").arg("-i").arg(&a).arg(&b).arg(&c_file);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("multiinter").arg("-i").arg(&a).arg(&b).arg(&c_file);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "multiinter overlapping 3-file mismatch"
+    );
+}
+
 // `subtract` (gaps of A not covered by B) must be byte-identical to
 // `bedtools subtract` — A-file order, gaps in coordinate order, columns kept.
 #[test]

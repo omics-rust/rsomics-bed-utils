@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use rsomics_common::{CommonFlags, Result, RsomicsError, Tool, ToolMeta};
@@ -49,6 +49,16 @@ enum Command {
     /// List unique chromosomes
     Chroms {
         input: PathBuf,
+        #[arg(short = 'o', long, default_value = "-")]
+        output: String,
+    },
+    /// Assign cluster IDs to sorted BED intervals
+    Cluster {
+        #[arg(short = 'i', long)]
+        input: PathBuf,
+        /// Max gap (bp) between intervals still counted as the same cluster
+        #[arg(short = 'd', long, default_value_t = 0)]
+        distance: i64,
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
     },
@@ -118,6 +128,22 @@ enum Command {
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
     },
+    /// Group rows by key columns and aggregate a value column
+    Groupby {
+        #[arg(short = 'i', long, default_value = "-")]
+        input: String,
+        /// Comma-separated 1-based group key column indices (e.g. "1,2" or "1-3")
+        #[arg(short = 'g', long)]
+        group: String,
+        /// Comma-separated 1-based value column indices
+        #[arg(short = 'c', long)]
+        columns: String,
+        /// Comma-separated aggregation operations (sum,mean,min,max,count,collapse,distinct,first,last,stdev)
+        #[arg(short = 'o', long = "op")]
+        operations: String,
+        #[arg(long, default_value = "-")]
+        output: String,
+    },
     /// Intersect two BED files
     Intersect {
         #[arg(short = 'a', long)]
@@ -173,6 +199,17 @@ enum Command {
     /// Merge overlapping intervals (standalone)
     MergeOverlaps {
         input: PathBuf,
+        #[arg(short = 'o', long, default_value = "-")]
+        output: String,
+    },
+    /// Disjoint-interval union of multiple sorted BED files with coverage annotation
+    Multiinter {
+        /// Input BED files (must be sorted)
+        #[arg(short = 'i', long, num_args = 1.., value_delimiter = ' ')]
+        inputs: Vec<PathBuf>,
+        /// Optional names for each file (must match number of -i files)
+        #[arg(long, num_args = 1.., value_delimiter = ' ')]
+        names: Option<Vec<String>>,
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
     },
@@ -424,6 +461,14 @@ impl Tool for Cli {
                 let mut out = open_output(&output)?;
                 ops::closest::closest(&a, &b, &mut out)?;
             }
+            Command::Cluster {
+                input,
+                distance,
+                output,
+            } => {
+                let mut out = open_output(&output)?;
+                ops::cluster::cluster(&input, &mut out, distance)?;
+            }
             Command::Complement {
                 input,
                 genome,
@@ -465,6 +510,16 @@ impl Tool for Cli {
             Command::Getfasta { bed, fasta, output } => {
                 let mut out = open_output(&output)?;
                 ops::getfasta::getfasta(&bed, &fasta, &mut out)?;
+            }
+            Command::Groupby {
+                input,
+                group,
+                columns,
+                operations,
+                output,
+            } => {
+                let mut out = open_output(&output)?;
+                ops::groupby::groupby(&input, &mut out, &group, &columns, &operations)?;
             }
             Command::Intersect { a, b, output } => {
                 let mut out = open_output(&output)?;
@@ -515,6 +570,15 @@ impl Tool for Cli {
             Command::MergeOverlaps { input, output } => {
                 let mut out = open_output(&output)?;
                 ops::merge_overlaps::bed_merge_overlaps(&input, &mut out)?;
+            }
+            Command::Multiinter {
+                inputs,
+                names,
+                output,
+            } => {
+                let mut out = open_output(&output)?;
+                let paths: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
+                ops::multiinter::multiinter(&paths, names.as_deref(), &mut out)?;
             }
             Command::Midpoint { input, output } => {
                 let mut out = open_output(&output)?;
