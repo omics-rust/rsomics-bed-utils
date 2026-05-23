@@ -18,46 +18,32 @@ use std::path::Path;
 
 use rsomics_common::{Result, RsomicsError};
 
-/// Format a fraction with C `%.6g` semantics (6 significant digits, trailing
-/// zeros stripped, decimal point removed when not needed).
+/// Format a fraction with C `%.6g` semantics: 6 significant digits, trailing
+/// zeros stripped, decimal point removed when not needed.  Scientific notation
+/// (with 2-digit exponent) when magnitude < -4 or >= 6.
 fn fmt_g6(v: f64) -> String {
     if v == 0.0 {
         return "0".to_string();
     }
-    if v == 1.0 {
-        return "1".to_string();
-    }
-    let mag = v.abs().log10().floor() as i32;
-    if (-4..6).contains(&mag) {
-        let decimals = (5 - mag).max(0) as usize;
-        let s = format!("{:.prec$}", v, prec = decimals);
+    #[allow(clippy::cast_possible_truncation)]
+    let exp = v.abs().log10().floor() as i32;
+    if !(-4..6).contains(&exp) {
+        // Scientific notation: 6 sig figs = 5 digits after the decimal point.
+        // Compute mantissa so that 1 <= mantissa < 10, then strip trailing zeros.
+        let mantissa = v / 10f64.powi(exp);
+        let s = format!("{mantissa:.5}e{exp:+03}");
+        let (m_part, e_part) = s.split_once('e').unwrap();
+        let m_trimmed = m_part.trim_end_matches('0').trim_end_matches('.');
+        format!("{m_trimmed}e{e_part}")
+    } else {
+        // Fixed notation: enough decimal places for 6 significant figures.
+        let decimals = usize::try_from((5 - exp).max(0)).unwrap_or(0);
+        let s = format!("{v:.decimals$}");
         if s.contains('.') {
             s.trim_end_matches('0').trim_end_matches('.').to_string()
         } else {
             s
         }
-    } else {
-        let raw = format!("{:.5e}", v);
-        normalize_exp_2digits(raw)
-    }
-}
-
-fn normalize_exp_2digits(s: String) -> String {
-    if let Some(e_pos) = s.find('e') {
-        let (mantissa, exp_part) = s.split_at(e_pos);
-        let after_e = &exp_part[1..];
-        let (sign, digits) = if after_e.starts_with(['+', '-']) {
-            (&after_e[..1], &after_e[1..])
-        } else {
-            ("+", after_e)
-        };
-        if digits.len() < 2 {
-            format!("{mantissa}e{sign}{digits:0>2}")
-        } else {
-            s
-        }
-    } else {
-        s
     }
 }
 

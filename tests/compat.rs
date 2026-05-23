@@ -888,6 +888,55 @@ fn closest_overlapping_matches_bedtools() {
     );
 }
 
+// `closest` ties: multiple B at the same minimum distance must all be emitted,
+// and a wide B (start far left, end inside A) must be found as overlapping.
+#[test]
+fn closest_ties_and_wide_b_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+
+    // Ties: two B intervals equidistant from A; both must be emitted.
+    let a = golden("closest_ties_a.bed");
+    let b = golden("closest_ties_b.bed");
+    let ours = run({
+        let mut c = bin();
+        c.arg("closest").arg(&a).arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("closest").arg("-a").arg(&a).arg("-b").arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "closest ties mismatch"
+    );
+
+    // Wide B: an interval starting far left of A but ending inside A must be
+    // detected as overlapping (prefix-max-end scan required for correctness).
+    let a2 = golden("closest_wide_b_a.bed");
+    let b2 = golden("closest_wide_b_b.bed");
+    let ours2 = run({
+        let mut c = bin();
+        c.arg("closest").arg(&a2).arg(&b2);
+        c
+    });
+    let theirs2 = run({
+        let mut c = Command::new("bedtools");
+        c.arg("closest").arg("-a").arg(&a2).arg("-b").arg(&b2);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours2),
+        String::from_utf8_lossy(&theirs2),
+        "closest wide-B overlap mismatch"
+    );
+}
+
 // `map` number formatting must match bedtools' `%.10g` convention:
 // integer-valued floats print without a decimal point; others strip trailing zeros.
 #[test]
@@ -962,6 +1011,62 @@ fn genomecov_overlapping_matches_bedtools() {
         String::from_utf8_lossy(&ours),
         String::from_utf8_lossy(&theirs),
         "genomecov overlapping mismatch"
+    );
+}
+
+// `genomecov` fraction formatting must match C `%.6g`: trailing zeros in the
+// scientific-notation mantissa must be stripped (e.g. 1.9272e-05 not 1.92720e-05).
+#[test]
+fn genomecov_scientific_notation_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+
+    // genomecov_sci: sparse coverage → fraction rows in scientific notation.
+    let input = golden("genomecov_sci.bed");
+    let genome = golden("genomecov_sci_genome.txt");
+    let ours = run({
+        let mut c = bin();
+        c.arg("genomecov").arg(&input).arg("-g").arg(&genome);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("genomecov")
+            .arg("-i")
+            .arg(&input)
+            .arg("-g")
+            .arg(&genome);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "genomecov sci notation mismatch"
+    );
+
+    // genomecov_sciformat: exact 1.9272e-05 case (trailing zero must be stripped).
+    let input2 = golden("genomecov_sciformat.bed");
+    let genome2 = golden("genomecov_sciformat_genome.txt");
+    let ours2 = run({
+        let mut c = bin();
+        c.arg("genomecov").arg(&input2).arg("-g").arg(&genome2);
+        c
+    });
+    let theirs2 = run({
+        let mut c = Command::new("bedtools");
+        c.arg("genomecov")
+            .arg("-i")
+            .arg(&input2)
+            .arg("-g")
+            .arg(&genome2);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours2),
+        String::from_utf8_lossy(&theirs2),
+        "genomecov 1.9272e-05 format mismatch"
     );
 }
 
