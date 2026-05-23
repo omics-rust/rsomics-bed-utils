@@ -1,6 +1,6 @@
 [package]
 name = "rsomics-bed-utils"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,6 @@ path = "src/main.rs"
 rsomics-common = { version = "0.6" }
 rsomics-help = { version = "0.3" }
 rsomics-intervals = { version = "0.1" }
-rsomics-fasta-index = { version = "0.1" }
 clap = { version = "4", features = ["derive"] }
 needletail = "0.6"
 rand = "0.8"
