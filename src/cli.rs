@@ -112,6 +112,18 @@ enum Command {
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
     },
+    /// Fisher's exact test: do A and B overlap more than expected by chance?
+    Fisher {
+        #[arg(short = 'a', long)]
+        a: PathBuf,
+        #[arg(short = 'b', long)]
+        b: PathBuf,
+        /// Genome file (chrom<TAB>size)
+        #[arg(short = 'g', long)]
+        genome: PathBuf,
+        #[arg(short = 'o', long, default_value = "-")]
+        output: String,
+    },
     /// Genome coverage (per-base)
     Genomecov {
         input: PathBuf,
@@ -236,6 +248,15 @@ enum Command {
         upstream: u64,
         #[arg(short = 'd', long, default_value_t = 200)]
         downstream: u64,
+        #[arg(short = 'o', long, default_value = "-")]
+        output: String,
+    },
+    /// Relative distance distribution between two BED files
+    Reldist {
+        #[arg(short = 'a', long)]
+        a: PathBuf,
+        #[arg(short = 'b', long)]
+        b: PathBuf,
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
     },
@@ -383,6 +404,20 @@ enum Command {
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
     },
+    /// Combine N bedGraph files into a disjoint-segment matrix
+    Unionbedg {
+        /// Input bedGraph files
+        #[arg(short = 'i', long, num_args = 1.., value_delimiter = ' ')]
+        inputs: Vec<PathBuf>,
+        /// Optional column names (must match number of -i files)
+        #[arg(long, num_args = 1.., value_delimiter = ' ')]
+        names: Option<Vec<String>>,
+        /// Print a header line with column names
+        #[arg(long)]
+        header: bool,
+        #[arg(short = 'o', long, default_value = "-")]
+        output: String,
+    },
     /// Union of two BED files
     Union {
         a: PathBuf,
@@ -499,6 +534,15 @@ impl Tool for Cli {
                 let mut out = open_output(&output)?;
                 ops::flank_bp::bed_flank_bp(&input, &mut out, bp)?;
             }
+            Command::Fisher {
+                a,
+                b,
+                genome,
+                output,
+            } => {
+                let mut out = open_output(&output)?;
+                ops::fisher::fisher(&a, &b, &genome, &mut out)?;
+            }
             Command::Genomecov {
                 input,
                 genome,
@@ -604,6 +648,10 @@ impl Tool for Cli {
             } => {
                 let mut out = open_output(&output)?;
                 ops::promoters::bed_promoters(&input, &mut out, upstream, downstream)?;
+            }
+            Command::Reldist { a, b, output } => {
+                let mut out = open_output(&output)?;
+                ops::reldist::reldist(&a, &b, &mut out)?;
             }
             Command::Random {
                 genome,
@@ -720,6 +768,16 @@ impl Tool for Cli {
             Command::TotalSpan { input, output } => {
                 let mut out = open_output(&output)?;
                 ops::total_span::bed_total_span(&input, &mut out)?;
+            }
+            Command::Unionbedg {
+                inputs,
+                names,
+                header,
+                output,
+            } => {
+                let mut out = open_output(&output)?;
+                let paths: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
+                ops::unionbedg::unionbedg(&paths, names.as_deref(), header, &mut out)?;
             }
             Command::Union { a, b, output } => {
                 let mut out = open_output(&output)?;

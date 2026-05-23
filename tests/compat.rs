@@ -325,3 +325,212 @@ fn subtract_matches_bedtools() {
         String::from_utf8_lossy(&theirs)
     );
 }
+
+// `fisher` must be byte-identical to `bedtools fisher`.
+// Bedtools version at time of writing: v2.31.1.
+// Number format: p-values use C's %.5g (5 sig figs, trailing zeros stripped);
+// ratio uses %.3f; "inf" printed literally when either marginal is zero.
+#[test]
+fn fisher_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("fisher_a.bed");
+    let b = golden("fisher_b.bed");
+    let g = golden("fisher_genome.txt");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("fisher")
+            .arg("-a")
+            .arg(&a)
+            .arg("-b")
+            .arg(&b)
+            .arg("-g")
+            .arg(&g);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("fisher")
+            .arg("-a")
+            .arg(&a)
+            .arg("-b")
+            .arg(&b)
+            .arg("-g")
+            .arg(&g);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "fisher mismatch"
+    );
+}
+
+// `fisher` on inputs where all A intervals overlap B (high-overlap edge case).
+#[test]
+fn fisher_high_overlap_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("small.bed");
+    let b = golden("b.bed");
+    let g = golden("genome.txt");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("fisher")
+            .arg("-a")
+            .arg(&a)
+            .arg("-b")
+            .arg(&b)
+            .arg("-g")
+            .arg(&g);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("fisher")
+            .arg("-a")
+            .arg(&a)
+            .arg("-b")
+            .arg(&b)
+            .arg("-g")
+            .arg(&g);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "fisher high-overlap mismatch"
+    );
+}
+
+// `reldist` must be byte-identical to `bedtools reldist`.
+// Output columns: reldist count total fraction.
+// Bins use floor(reldist*100)/100 (two decimal places).
+// A intervals without two adjacent B midpoints are silently skipped.
+#[test]
+fn reldist_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("reldist_a.bed");
+    let b = golden("reldist_b.bed");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("reldist").arg("-a").arg(&a).arg("-b").arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("reldist").arg("-a").arg(&a).arg("-b").arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "reldist mismatch"
+    );
+}
+
+// `unionbedg` 2-file case must be byte-identical to `bedtools unionbedg`.
+#[test]
+fn unionbedg_2file_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("unionbedg_a.bg");
+    let b = golden("unionbedg_b.bg");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("unionbedg").arg("-i").arg(&a).arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("unionbedg").arg("-i").arg(&a).arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "unionbedg 2-file mismatch"
+    );
+}
+
+// `unionbedg` 3-file case with overlapping intervals across files.
+#[test]
+fn unionbedg_3file_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("unionbedg_a.bg");
+    let b = golden("unionbedg_b.bg");
+    let c_file = golden("unionbedg_c.bg");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("unionbedg").arg("-i").arg(&a).arg(&b).arg(&c_file);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("unionbedg").arg("-i").arg(&a).arg(&b).arg(&c_file);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "unionbedg 3-file mismatch"
+    );
+}
+
+// `unionbedg` with -names and -header.
+#[test]
+fn unionbedg_header_names_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("unionbedg_a.bg");
+    let b = golden("unionbedg_b.bg");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("unionbedg")
+            .arg("--header")
+            .arg("--names")
+            .arg("FileA")
+            .arg("FileB")
+            .arg("-i")
+            .arg(&a)
+            .arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("unionbedg")
+            .arg("-header")
+            .arg("-names")
+            .arg("FileA")
+            .arg("FileB")
+            .arg("-i")
+            .arg(&a)
+            .arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "unionbedg header+names mismatch"
+    );
+}
