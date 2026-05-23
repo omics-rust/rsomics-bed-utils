@@ -23,48 +23,210 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 
 use rsomics_common::{Result, RsomicsError};
+
+use crate::ops::byteparse::is_skippable;
 
 // ---------------------------------------------------------------------------
 // BED loading helpers
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-struct Interval {
-    chrom: String,
-    start: i64,
-    end: i64,
+/// One BED set parsed into struct-of-arrays form. Chrom names are interned to a
+/// dense `u32` id shared across both A and B (`interner`), so the overlap sweep
+/// works on integer ids instead of re-comparing strings. Coordinates are `i32`
+/// (genomic positions fit comfortably below `i32::MAX` ≈ 2.1 Gb), halving the
+/// per-interval footprint. `union` is Σ(end−start) and `count` the interval
+/// count, both accumulated during the single parse pass so fisher needs no
+/// second walk over the records.
+struct BedSet {
+    chrom_id: Vec<u32>,
+    start: Vec<i32>,
+    end: Vec<i32>,
+    union: i64,
+    count: i64,
 }
 
-fn load_bed(path: &Path) -> Result<Vec<Interval>> {
-    let file = File::open(path)
-        .map_err(|e| RsomicsError::InvalidInput(format!("{}: {e}", path.display())))?;
-    let mut out = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line.map_err(RsomicsError::Io)?;
-        if line.is_empty() || line.starts_with('#') {
+/// Parse one coordinate field from raw bytes. BED coordinates are non-negative
+/// integers below `i32::MAX`; anything else is a malformed file and fails loud.
+fn parse_coord(bytes: &[u8], lineno: usize, what: &str) -> Result<i32> {
+    if bytes.is_empty() {
+        return Err(RsomicsError::InvalidInput(format!(
+            "BED line {lineno}: empty {what}"
+        )));
+    }
+    let mut v: i64 = 0;
+    for &c in bytes {
+        if !c.is_ascii_digit() {
+            return Err(RsomicsError::InvalidInput(format!(
+                "BED line {lineno}: bad {what} {:?}",
+                String::from_utf8_lossy(bytes)
+            )));
+        }
+        v = v * 10 + i64::from(c - b'0');
+        if v > i64::from(i32::MAX) {
+            return Err(RsomicsError::InvalidInput(format!(
+                "BED line {lineno}: {what} exceeds i32::MAX {:?}",
+                String::from_utf8_lossy(bytes)
+            )));
+        }
+    }
+    Ok(v as i32)
+}
+
+/// Load a BED file in one `read_to_end` + byte-slice pass: no per-line `String`
+/// allocation, no `to_string()` per chrom, integer fields parsed directly from
+/// bytes. Chrom names are interned through the shared `interner`. Sorted input
+/// is grouped by chrom contiguously, so the previous chrom's id is reused
+/// without a hash lookup on the common case.
+fn load_bed(path: &Path, interner: &mut HashMap<Vec<u8>, u32>) -> Result<BedSet> {
+    let mut data = Vec::new();
+    File::open(path)
+        .map_err(|e| RsomicsError::InvalidInput(format!("{}: {e}", path.display())))?
+        .read_to_end(&mut data)
+        .map_err(RsomicsError::Io)?;
+
+    let mut chrom_id = Vec::new();
+    let mut start = Vec::new();
+    let mut end = Vec::new();
+    let mut union: i64 = 0;
+    let mut count: i64 = 0;
+
+    let mut last_chrom: Vec<u8> = Vec::new();
+    let mut last_id: u32 = u32::MAX;
+    let mut lineno = 0usize;
+
+    for raw in data.split(|&b| b == b'\n') {
+        let line = match raw.last() {
+            Some(b'\r') => &raw[..raw.len() - 1],
+            _ => raw,
+        };
+        if is_skippable(line) {
             continue;
         }
-        let mut f = line.splitn(4, '\t');
-        let chrom = match f.next() {
-            Some(c) => c.to_string(),
-            None => continue,
+        lineno += 1;
+
+        let t1 = line.iter().position(|&c| c == b'\t').ok_or_else(|| {
+            RsomicsError::InvalidInput(format!("BED line {lineno}: missing start"))
+        })?;
+        let chrom = &line[..t1];
+        let rest = &line[t1 + 1..];
+        let t2 = rest
+            .iter()
+            .position(|&c| c == b'\t')
+            .ok_or_else(|| RsomicsError::InvalidInput(format!("BED line {lineno}: missing end")))?;
+        let s = parse_coord(&rest[..t2], lineno, "start")?;
+        let rest2 = &rest[t2 + 1..];
+        let t3 = rest2
+            .iter()
+            .position(|&c| c == b'\t')
+            .unwrap_or(rest2.len());
+        let e = parse_coord(&rest2[..t3], lineno, "end")?;
+
+        let id = if chrom == last_chrom.as_slice() {
+            last_id
+        } else {
+            let next = interner.len() as u32;
+            let id = *interner.entry(chrom.to_vec()).or_insert(next);
+            last_chrom.clear();
+            last_chrom.extend_from_slice(chrom);
+            last_id = id;
+            id
         };
-        let start: i64 = match f.next().and_then(|s| s.parse().ok()) {
-            Some(v) => v,
-            None => continue,
-        };
-        let end: i64 = match f.next().and_then(|s| s.parse().ok()) {
-            Some(v) => v,
-            None => continue,
-        };
-        out.push(Interval { chrom, start, end });
+
+        chrom_id.push(id);
+        start.push(s);
+        end.push(e);
+        union += i64::from(e - s);
+        count += 1;
     }
-    Ok(out)
+
+    Ok(BedSet {
+        chrom_id,
+        start,
+        end,
+        union,
+        count,
+    })
+}
+
+/// Count every (A, B) pair that overlaps under half-open `[start, end)`
+/// semantics, summed across all chroms shared by both sets.
+///
+/// Per chrom, A and B are each sorted by start, then swept by merging the two
+/// start streams. Two min-heaps hold the end coordinates of the currently-open
+/// A and B intervals; an interval expires (is popped) once the sweep coordinate
+/// reaches its end. When an A interval opens it overlaps every still-open B
+/// (and vice versa). Coincident starts are processed A-first then B-first so a
+/// pair sharing a start coordinate is counted exactly once — matching the
+/// close-before-open / A-before-B event ordering bedtools' sort implies.
+///
+/// This avoids the 2·(|A|+|B|) endpoint-event vector and its sort: it allocates
+/// only the small per-side active heaps (bounded by the depth of overlap, not
+/// the interval count).
+fn count_overlaps(a: &BedSet, b: &BedSet, nchrom: usize) -> i64 {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let mut a_groups: Vec<Vec<u32>> = vec![Vec::new(); nchrom];
+    let mut b_groups: Vec<Vec<u32>> = vec![Vec::new(); nchrom];
+    for (i, &c) in a.chrom_id.iter().enumerate() {
+        a_groups[c as usize].push(i as u32);
+    }
+    for (i, &c) in b.chrom_id.iter().enumerate() {
+        b_groups[c as usize].push(i as u32);
+    }
+
+    let mut overlap: i64 = 0;
+    let mut a_ends: BinaryHeap<Reverse<i32>> = BinaryHeap::new();
+    let mut b_ends: BinaryHeap<Reverse<i32>> = BinaryHeap::new();
+
+    for chrom in 0..nchrom {
+        let ag = &mut a_groups[chrom];
+        let bg = &mut b_groups[chrom];
+        if ag.is_empty() || bg.is_empty() {
+            continue;
+        }
+        ag.sort_unstable_by_key(|&i| a.start[i as usize]);
+        bg.sort_unstable_by_key(|&i| b.start[i as usize]);
+
+        a_ends.clear();
+        b_ends.clear();
+        let (na, nb) = (ag.len(), bg.len());
+        let mut ia = 0usize;
+        let mut ib = 0usize;
+        loop {
+            let a_next = ag.get(ia).map(|&i| a.start[i as usize]);
+            let b_next = bg.get(ib).map(|&i| b.start[i as usize]);
+            let coord = match (a_next, b_next) {
+                (None, None) => break,
+                (Some(x), None) => x,
+                (None, Some(y)) => y,
+                (Some(x), Some(y)) => x.min(y),
+            };
+            while a_ends.peek().is_some_and(|&Reverse(e)| e <= coord) {
+                a_ends.pop();
+            }
+            while b_ends.peek().is_some_and(|&Reverse(e)| e <= coord) {
+                b_ends.pop();
+            }
+            while ia < na && a.start[ag[ia] as usize] == coord {
+                overlap += b_ends.len() as i64;
+                a_ends.push(Reverse(a.end[ag[ia] as usize]));
+                ia += 1;
+            }
+            while ib < nb && b.start[bg[ib] as usize] == coord {
+                overlap += a_ends.len() as i64;
+                b_ends.push(Reverse(b.end[bg[ib] as usize]));
+                ib += 1;
+            }
+        }
+    }
+    overlap
 }
 
 fn load_genome(path: &Path) -> Result<i64> {
@@ -297,88 +459,17 @@ fn normalize_exp_2digits(s: String) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn fisher(a_path: &Path, b_path: &Path, genome_path: &Path, out: &mut dyn Write) -> Result<()> {
-    let a = load_bed(a_path)?;
-    let b = load_bed(b_path)?;
+    let mut interner: HashMap<Vec<u8>, u32> = HashMap::new();
+    let a = load_bed(a_path, &mut interner)?;
+    let b = load_bed(b_path, &mut interner)?;
     let genome_size = load_genome(genome_path)?;
 
-    let query_counts = a.len() as i64;
-    let db_counts = b.len() as i64;
+    let query_counts = a.count;
+    let db_counts = b.count;
+    let query_union = a.union;
+    let db_union = b.union;
 
-    let query_union: i64 = a.iter().map(|iv| iv.end - iv.start).sum();
-    let db_union: i64 = b.iter().map(|iv| iv.end - iv.start).sum();
-
-    // Group intervals by chrom, sort within each chrom by start.
-    // This avoids any cross-chrom sort-order dependency — bedtools requires sorted input
-    // so within each chrom the order is already by start; we just group and sort within.
-    let mut a_by_chrom: std::collections::HashMap<&str, Vec<&Interval>> =
-        std::collections::HashMap::new();
-    let mut b_by_chrom: std::collections::HashMap<&str, Vec<&Interval>> =
-        std::collections::HashMap::new();
-    for iv in &a {
-        a_by_chrom.entry(iv.chrom.as_str()).or_default().push(iv);
-    }
-    for iv in &b {
-        b_by_chrom.entry(iv.chrom.as_str()).or_default().push(iv);
-    }
-    for v in a_by_chrom.values_mut() {
-        v.sort_unstable_by_key(|iv| iv.start);
-    }
-    for v in b_by_chrom.values_mut() {
-        v.sort_unstable_by_key(|iv| iv.start);
-    }
-
-    // Count overlapping A×B pairs per chrom.
-    //
-    // Classic O(N log N sort + O(N) sweep: build an event list from all four
-    // endpoint kinds, sort by coordinate (closes before opens on ties to honour
-    // half-open [start,end) semantics — an interval ending at p does NOT overlap
-    // one starting at p), then maintain `active_a` / `active_b` counters.
-    // When an A interval opens, add active_b pairs; when a B interval opens, add
-    // active_a pairs. No BIT, no coordinate compression — tiny constant overhead.
-    let mut overlap_counts: i64 = 0;
-    for (chrom, a_ivs) in &a_by_chrom {
-        let b_ivs = match b_by_chrom.get(chrom) {
-            Some(v) => v,
-            None => continue,
-        };
-        if b_ivs.is_empty() {
-            continue;
-        }
-
-        // Event kinds sorted so that ties are broken: closes (0) before opens (1).
-        // 0 = close-A, 1 = close-B, 2 = open-A, 3 = open-B.
-        // Using a u8 kind in the tuple gives the right ordering for free.
-        let mut events: Vec<(i64, u8)> = Vec::with_capacity(2 * a_ivs.len() + 2 * b_ivs.len());
-        for iv in a_ivs.iter() {
-            events.push((iv.start, 2)); // open-A
-            events.push((iv.end, 0)); // close-A
-        }
-        for iv in b_ivs.iter() {
-            events.push((iv.start, 3)); // open-B
-            events.push((iv.end, 1)); // close-B
-        }
-        events.sort_unstable();
-
-        let mut active_a: i64 = 0;
-        let mut active_b: i64 = 0;
-        for (_, kind) in &events {
-            match kind {
-                0 => active_a -= 1, // close-A
-                1 => active_b -= 1, // close-B
-                2 => {
-                    // open-A: this interval overlaps every currently-open B
-                    overlap_counts += active_b;
-                    active_a += 1;
-                }
-                3 => {
-                    // open-B: this interval overlaps every currently-open A
-                    overlap_counts += active_a;
-                    active_b += 1;
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
+    let overlap_counts = count_overlaps(&a, &b, interner.len());
 
     // Contingency table entries.
     let n11 = overlap_counts;
