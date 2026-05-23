@@ -238,6 +238,9 @@ fn kt_fisher_exact(n11: i64, n12: i64, n21: i64, n22: i64) -> (f64, f64, f64) {
 /// Format a float using C's `%.5g` semantics: 5 significant figures, no
 /// trailing zeros, no trailing decimal point.  Special cases: exactly 0 → "0",
 /// exactly 1 → "1".
+///
+/// Scientific notation uses at least two exponent digits (e.g. `1.3582e-06`),
+/// matching C's printf which always writes `e+XX` / `e-XX` with a 2-digit minimum.
 fn fmt_g5(v: f64) -> String {
     if v == 0.0 {
         return "0".to_string();
@@ -248,20 +251,42 @@ fn fmt_g5(v: f64) -> String {
     // Determine magnitude for %g-style formatting.
     let mag = v.abs().log10().floor() as i32;
     // %g uses fixed notation when -4 <= exp < precision (5).
-    // exp here is the exponent of the number (mag).
-    let s = if (-4..5).contains(&mag) {
+    if (-4..5).contains(&mag) {
         // fixed: number of decimals = 4 - mag (so total sig figs = 5)
         let decimals = (4 - mag).max(0) as usize;
-        format!("{:.prec$}", v, prec = decimals)
+        let s = format!("{:.prec$}", v, prec = decimals);
+        // Strip trailing zeros after decimal point, then bare decimal point.
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s
+        }
     } else {
-        // scientific: 4 decimal places = 5 sig figs
-        format!("{:.4e}", v)
-            // C uses e+01 style, Rust uses e1 — normalise
-            .replace("e-0", "e-0") // keep as-is, normalise below
-    };
-    // Strip trailing zeros after decimal point, then strip bare decimal point.
-    if s.contains('.') && !s.contains('e') {
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        // Scientific notation: 4 decimal places = 5 sig figs.
+        // Rust's {:.4e} writes e.g. "1.3582e-6"; C printf writes "1.3582e-06".
+        // Normalise exponent to minimum 2 digits to match C behaviour.
+        let raw = format!("{:.4e}", v);
+        normalize_exp_2digits(raw)
+    }
+}
+
+/// Ensure the exponent in a scientific-notation string has at least 2 digits,
+/// matching C's `printf` style (`e-6` → `e-06`, `e+6` → `e+06`).
+fn normalize_exp_2digits(s: String) -> String {
+    if let Some(e_pos) = s.find('e') {
+        let (mantissa, exp_part) = s.split_at(e_pos);
+        // exp_part starts with 'e', followed by sign (+/-) and digits.
+        let after_e = &exp_part[1..]; // skip 'e'
+        let (sign, digits) = if after_e.starts_with(['+', '-']) {
+            (&after_e[..1], &after_e[1..])
+        } else {
+            ("+", after_e)
+        };
+        if digits.len() < 2 {
+            format!("{mantissa}e{sign}{digits:0>2}")
+        } else {
+            s
+        }
     } else {
         s
     }

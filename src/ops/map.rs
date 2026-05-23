@@ -59,6 +59,31 @@ pub fn map_bed(
     Ok(count)
 }
 
+/// Format a float value using bedtools' `%.10g` convention:
+/// up to 10 significant digits, trailing zeros stripped, decimal point
+/// removed when not needed.  Integer-valued floats print without a decimal.
+fn format_g10(v: f64) -> String {
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    // Format with %.10g semantics: pick fixed vs scientific based on magnitude.
+    let mag = v.abs().log10().floor() as i32;
+    // %g uses fixed when exponent is in [-4, precision), i.e. [-4, 10).
+    let s = if (-4..10).contains(&mag) {
+        // number of decimal places needed to show 10 sig figs
+        let decimals = (9 - mag).max(0) as usize;
+        format!("{:.prec$}", v, prec = decimals)
+    } else {
+        format!("{:.9e}", v)
+    };
+    // Strip trailing zeros after decimal, then bare decimal point.
+    if s.contains('.') && !s.contains('e') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
 fn aggregate(vals: &[f64], op: &str) -> String {
     if vals.is_empty() {
         return ".".to_string();
@@ -66,15 +91,12 @@ fn aggregate(vals: &[f64], op: &str) -> String {
     match op {
         "mean" => {
             let s: f64 = vals.iter().sum();
-            format!("{:.6}", s / vals.len() as f64)
+            format_g10(s / vals.len() as f64)
         }
-        "min" => format!("{:.6}", vals.iter().copied().fold(f64::INFINITY, f64::min)),
-        "max" => format!(
-            "{:.6}",
-            vals.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-        ),
+        "min" => format_g10(vals.iter().copied().fold(f64::INFINITY, f64::min)),
+        "max" => format_g10(vals.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
         "count" => format!("{}", vals.len()),
-        _ => format!("{:.6}", vals.iter().sum::<f64>()),
+        _ => format_g10(vals.iter().sum::<f64>()),
     }
 }
 

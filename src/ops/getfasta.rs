@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use rsomics_common::{Result, RsomicsError};
-use rsomics_fasta_index::fetch_region;
+use rsomics_fasta_index::fetch_seq;
 
 pub fn getfasta(bed_path: &Path, fasta_path: &Path, output: &mut dyn Write) -> Result<u64> {
     let fai_path = fasta_path.with_extension(format!(
@@ -27,12 +27,16 @@ pub fn getfasta(bed_path: &Path, fasta_path: &Path, output: &mut dyn Write) -> R
             continue;
         }
         let chrom = fields[0];
-        let start = fields[1];
-        let end = fields[2];
-        let region = format!("{chrom}:{start}-{end}");
+        let start: usize = fields[1]
+            .parse()
+            .map_err(|e| RsomicsError::InvalidInput(format!("bad start: {e}")))?;
+        let end: usize = fields[2]
+            .parse()
+            .map_err(|e| RsomicsError::InvalidInput(format!("bad end: {e}")))?;
 
-        let seq = fetch_region(fasta_path, &fai_path, &region)?;
-        writeln!(out, ">{region}").map_err(RsomicsError::Io)?;
+        // Use fetch_seq with explicit 0-based coordinates (BED is 0-based).
+        let seq = fetch_seq(fasta_path, &fai_path, chrom, start, end)?;
+        writeln!(out, ">{chrom}:{start}-{end}").map_err(RsomicsError::Io)?;
         out.write_all(&seq).map_err(RsomicsError::Io)?;
         out.write_all(b"\n").map_err(RsomicsError::Io)?;
         count += 1;

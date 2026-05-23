@@ -1,5 +1,14 @@
 #![allow(clippy::cast_precision_loss)]
 
+//! Nucleotide content per BED interval (`bedtools nuc`).
+//!
+//! Output columns match bedtools exactly:
+//!   - Dynamic header: one `#N_usercol` / `N_usercol` column per BED column
+//!     (the first gets the `#` prefix), then pct_at, pct_gc, num_A/C/G/T/N/oth,
+//!     seq_len.  Column numbers are 1-based and continue from the BED column count.
+//!   - pct_at and pct_gc use `%.6f` (always 6 decimal places).
+//!   - count columns are integers.
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -11,21 +20,51 @@ use rsomics_common::{Result, RsomicsError};
 pub fn bed_nuc(bed_path: &Path, fasta_path: &Path, output: &mut dyn Write) -> Result<u64> {
     let seqs = load_fasta(fasta_path)?;
 
-    let file = File::open(bed_path)
-        .map_err(|e| RsomicsError::InvalidInput(format!("{}: {e}", bed_path.display())))?;
-    let reader = BufReader::new(file);
+    // Two-pass: first count max BED columns to build correct header, then emit.
+    let raw_lines: Vec<String> = {
+        let file = File::open(bed_path)
+            .map_err(|e| RsomicsError::InvalidInput(format!("{}: {e}", bed_path.display())))?;
+        BufReader::new(file)
+            .lines()
+            .map(|l| l.map_err(RsomicsError::Io))
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    let bed_lines: Vec<&str> = raw_lines
+        .iter()
+        .map(String::as_str)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+
+    let max_cols = bed_lines
+        .iter()
+        .map(|l| l.split('\t').count())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+
     let mut out = BufWriter::with_capacity(64 * 1024, output);
 
-    writeln!(out, "#chrom\tstart\tend\tA\tC\tG\tT\tN\tother\tlen\tGC_pct")
-        .map_err(RsomicsError::Io)?;
+    // Build and write header.
+    let stats_start = max_cols + 1;
+    let mut hdr = String::new();
+    for i in 1..=max_cols {
+        if i == 1 {
+            hdr.push_str(&format!("#{i}_usercol"));
+        } else {
+            hdr.push_str(&format!("\t{i}_usercol"));
+        }
+    }
+    let n = stats_start;
+    hdr.push_str(&format!(
+        "\t{}_pct_at\t{}_pct_gc\t{}_num_A\t{}_num_C\t{}_num_G\t{}_num_T\t{}_num_N\t{}_num_oth\t{}_seq_len",
+        n, n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8
+    ));
+    writeln!(out, "{hdr}").map_err(RsomicsError::Io)?;
 
     let mut count: u64 = 0;
 
-    for line in reader.lines() {
-        let line = line.map_err(RsomicsError::Io)?;
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
+    for line in &bed_lines {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 3 {
             continue;
@@ -39,26 +78,36 @@ pub fn bed_nuc(bed_path: &Path, fasta_path: &Path, output: &mut dyn Write) -> Re
             let e = end.min(seq.len());
             count_bases(&seq[s..e])
         } else {
-            BaseCounts {
-                adenine: 0,
-                cytosine: 0,
-                guanine: 0,
-                thymine: 0,
-                ambiguous: 0,
-                other: 0,
-            }
+            BaseCounts::default()
         };
 
         let len = bc.adenine + bc.cytosine + bc.guanine + bc.thymine + bc.ambiguous + bc.other;
-        let gc_pct = if len > 0 {
-            (bc.guanine + bc.cytosine) as f64 / len as f64 * 100.0
+        let pct_at = if len > 0 {
+            (bc.adenine + bc.thymine) as f64 / len as f64
+        } else {
+            0.0
+        };
+        let pct_gc = if len > 0 {
+            (bc.guanine + bc.cytosine) as f64 / len as f64
         } else {
             0.0
         };
 
+        // All BED columns (exactly as in input).
+        for (i, &f) in fields.iter().enumerate() {
+            if i > 0 {
+                write!(out, "\t").map_err(RsomicsError::Io)?;
+            }
+            write!(out, "{f}").map_err(RsomicsError::Io)?;
+        }
+        // Pad to max_cols if this record has fewer columns.
+        for _ in fields.len()..max_cols {
+            write!(out, "\t").map_err(RsomicsError::Io)?;
+        }
+        // Stats columns.
         writeln!(
             out,
-            "{chrom}\t{start}\t{end}\t{}\t{}\t{}\t{}\t{}\t{}\t{len}\t{gc_pct:.2}",
+            "\t{pct_at:.6}\t{pct_gc:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{len}",
             bc.adenine, bc.cytosine, bc.guanine, bc.thymine, bc.ambiguous, bc.other
         )
         .map_err(RsomicsError::Io)?;
@@ -69,6 +118,7 @@ pub fn bed_nuc(bed_path: &Path, fasta_path: &Path, output: &mut dyn Write) -> Re
     Ok(count)
 }
 
+#[derive(Default)]
 struct BaseCounts {
     adenine: u64,
     cytosine: u64,
@@ -79,14 +129,7 @@ struct BaseCounts {
 }
 
 fn count_bases(seq: &[u8]) -> BaseCounts {
-    let mut bc = BaseCounts {
-        adenine: 0,
-        cytosine: 0,
-        guanine: 0,
-        thymine: 0,
-        ambiguous: 0,
-        other: 0,
-    };
+    let mut bc = BaseCounts::default();
     for &base in seq {
         match base.to_ascii_uppercase() {
             b'A' => bc.adenine += 1,

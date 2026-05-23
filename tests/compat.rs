@@ -829,3 +829,208 @@ fn shuffle_chrom_invariant() {
         );
     }
 }
+
+// `jaccard` must be byte-identical to `bedtools jaccard` on a fixture with
+// self-overlapping intervals (which must be merged before computing statistics).
+#[test]
+fn jaccard_overlapping_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("jaccard_a.bed");
+    let b = golden("jaccard_b.bed");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("jaccard").arg(&a).arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("jaccard").arg("-a").arg(&a).arg("-b").arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "jaccard overlapping mismatch"
+    );
+}
+
+// `closest` must be byte-identical to `bedtools closest` including:
+//   - Ties at the same distance (emit all B at minimum distance).
+//   - Overlapping-B priority over adjacent-B (both at numeric distance 0).
+//   - No-chrom-match emits ".\t-1\t-1" without a distance column.
+#[test]
+fn closest_overlapping_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("closest_a.bed");
+    let b = golden("closest_b.bed");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("closest").arg(&a).arg(&b);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("closest").arg("-a").arg(&a).arg("-b").arg(&b);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "closest overlapping mismatch"
+    );
+}
+
+// `map` number formatting must match bedtools' `%.10g` convention:
+// integer-valued floats print without a decimal point; others strip trailing zeros.
+#[test]
+fn map_format_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let a = golden("map_a.bed");
+    let b = golden("map_b.bed");
+
+    for op in ["mean", "sum", "min", "max"] {
+        let ours = run({
+            let mut c = bin();
+            c.arg("map")
+                .arg(&a)
+                .arg(&b)
+                .arg("--operation")
+                .arg(op)
+                .arg("-c")
+                .arg("4");
+            c
+        });
+        let theirs = run({
+            let mut c = Command::new("bedtools");
+            c.arg("map")
+                .arg("-a")
+                .arg(&a)
+                .arg("-b")
+                .arg(&b)
+                .arg("-o")
+                .arg(op)
+                .arg("-c")
+                .arg("4");
+            c
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&ours),
+            String::from_utf8_lossy(&theirs),
+            "map op={op} format mismatch"
+        );
+    }
+}
+
+// `genomecov` must be byte-identical to `bedtools genomecov` on an input with
+// self-overlapping intervals (requiring per-base depth accounting).
+#[test]
+fn genomecov_overlapping_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    // small.bed has chr1:10-30 and chr1:20-50 (overlapping), so depth 2 exists.
+    let input = golden("small.bed");
+    let genome = golden("genome.txt");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("genomecov").arg(&input).arg("-g").arg(&genome);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("genomecov")
+            .arg("-i")
+            .arg(&input)
+            .arg("-g")
+            .arg(&genome);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "genomecov overlapping mismatch"
+    );
+}
+
+// `nuc` header and data columns must be byte-identical to `bedtools nuc`.
+#[test]
+fn nuc_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+
+    // Build .fai for the reference (bedtools nuc reads the FASTA directly).
+    let fasta = golden("nuc_ref.fa");
+    let bed = golden("nuc_regions.bed");
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("nuc").arg(&bed).arg("-f").arg(&fasta);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("nuc").arg("-bed").arg(&bed).arg("-fi").arg(&fasta);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "nuc mismatch"
+    );
+}
+
+// `getfasta` must extract correct sequences (0-based BED coords).
+#[test]
+fn getfasta_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let fasta = golden("nuc_ref.fa");
+    let bed = golden("nuc_regions.bed");
+
+    // bedtools getfasta needs an .fai; build it if absent.
+    let fai = fasta.with_extension("fa.fai");
+    if !fai.exists() {
+        Command::new("samtools")
+            .arg("faidx")
+            .arg(&fasta)
+            .status()
+            .ok();
+    }
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("getfasta").arg(&bed).arg("-f").arg(&fasta);
+        c
+    });
+    let theirs = run({
+        let mut c = Command::new("bedtools");
+        c.arg("getfasta")
+            .arg("-fi")
+            .arg(&fasta)
+            .arg("-bed")
+            .arg(&bed);
+        c
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "getfasta mismatch"
+    );
+}

@@ -620,10 +620,7 @@ impl Tool for Cli {
             }
             Command::Jaccard { a, b } => {
                 let r = ops::jaccard::jaccard(&a, &b)?;
-                println!(
-                    "intersection\t{}\nunion\t{}\njaccard\t{:.6}\nn_intersections\t{}",
-                    r.intersection, r.union, r.jaccard, r.n_intersections
-                );
+                ops::jaccard::write_result(&r, &mut std::io::stdout().lock())?;
             }
             Command::Len { input, output } => {
                 let mut out = open_output(&output)?;
