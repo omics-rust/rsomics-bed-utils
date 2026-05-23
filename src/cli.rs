@@ -39,6 +39,26 @@ enum Command {
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
     },
+    /// Randomly reposition intervals within genome bounds (preserving length)
+    Shuffle {
+        /// Input BED file
+        #[arg(short = 'i', long = "input")]
+        input: PathBuf,
+        /// Genome file (chrom<TAB>size)
+        #[arg(short = 'g', long = "genome")]
+        genome: PathBuf,
+        /// Random seed for reproducibility
+        #[arg(long)]
+        seed: Option<u64>,
+        /// BED file of regions to exclude from placement
+        #[arg(long = "excl")]
+        excl: Option<PathBuf>,
+        /// Keep each interval on its original chromosome
+        #[arg(long)]
+        chrom: bool,
+        #[arg(short = 'o', long, default_value = "-")]
+        output: String,
+    },
     /// Sort BED by chrom + start (interval-set based)
     Sort {
         #[arg(short = 'i', long, default_value = "-")]
@@ -183,6 +203,24 @@ enum Command {
         step: u64,
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
+    },
+    /// Mask FASTA bases overlapping BED intervals
+    Maskfasta {
+        /// Input FASTA file
+        #[arg(short = 'i', long = "fasta")]
+        fasta: PathBuf,
+        /// BED file of regions to mask
+        #[arg(long = "bed")]
+        bed: PathBuf,
+        /// Output FASTA file ("-" for stdout)
+        #[arg(short = 'o', long = "output", default_value = "-")]
+        output: String,
+        /// Soft-mask (lowercase) instead of replacing with N
+        #[arg(long)]
+        soft: bool,
+        /// Mask character (default: N; ignored when --soft is given)
+        #[arg(long = "mc", default_value = "N")]
+        mask_char: char,
     },
     /// Map values from B onto A intervals
     Map {
@@ -476,6 +514,17 @@ impl Tool for Cli {
                 let mut out = open_output(&output)?;
                 ops::annotate::annotate_bed(&bed, &gff, &mut out, &feature_type, &attribute)?;
             }
+            Command::Shuffle {
+                input,
+                genome,
+                seed,
+                excl,
+                chrom,
+                output,
+            } => {
+                let mut out = open_output(&output)?;
+                ops::shuffle::shuffle(&input, &genome, seed, excl.as_deref(), chrom, &mut out)?;
+            }
             Command::Sort { input, output } => {
                 let mut out = open_output(&output)?;
                 if input == "-" {
@@ -588,6 +637,21 @@ impl Tool for Cli {
             } => {
                 let mut out = open_output(&output)?;
                 ops::makewindows::makewindows(&genome, window, step, &mut out)?;
+            }
+            Command::Maskfasta {
+                fasta,
+                bed,
+                output,
+                soft,
+                mask_char,
+            } => {
+                let mut out = open_output(&output)?;
+                let mode = if soft {
+                    ops::maskfasta::MaskMode::Soft
+                } else {
+                    ops::maskfasta::MaskMode::Hard(mask_char as u8)
+                };
+                ops::maskfasta::maskfasta(&fasta, &bed, &mode, &mut out)?;
             }
             Command::Map {
                 a,

@@ -534,3 +534,298 @@ fn unionbedg_header_names_matches_bedtools() {
         "unionbedg header+names mismatch"
     );
 }
+
+// `maskfasta` (default N-masking) must be BYTE-IDENTICAL to `bedtools maskfasta`.
+// Bedtools version at time of writing: v2.31.1.
+#[test]
+fn maskfasta_n_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let fasta = golden("mask_ref.fa");
+    let bed = golden("mask_regions.bed");
+    let tmpdir = std::env::temp_dir().join("rsomics-maskfasta-compat");
+    std::fs::create_dir_all(&tmpdir).unwrap();
+    let theirs_out = tmpdir.join("bedtools_masked.fa");
+
+    let bt_status = Command::new("bedtools")
+        .arg("maskfasta")
+        .arg("-fi")
+        .arg(&fasta)
+        .arg("-bed")
+        .arg(&bed)
+        .arg("-fo")
+        .arg(&theirs_out)
+        .status()
+        .unwrap();
+    assert!(bt_status.success(), "bedtools maskfasta failed");
+    let theirs = std::fs::read(&theirs_out).unwrap();
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("maskfasta")
+            .arg("--fasta")
+            .arg(&fasta)
+            .arg("--bed")
+            .arg(&bed);
+        c
+    });
+
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "maskfasta N-mask mismatch"
+    );
+}
+
+// `maskfasta --soft` must be BYTE-IDENTICAL to `bedtools maskfasta -soft`.
+#[test]
+fn maskfasta_soft_matches_bedtools() {
+    if !bedtools_available() {
+        eprintln!("skipping: bedtools not found");
+        return;
+    }
+    let fasta = golden("mask_ref.fa");
+    let bed = golden("mask_regions.bed");
+    let tmpdir = std::env::temp_dir().join("rsomics-maskfasta-soft-compat");
+    std::fs::create_dir_all(&tmpdir).unwrap();
+    let theirs_out = tmpdir.join("bedtools_soft.fa");
+
+    let bt_status = Command::new("bedtools")
+        .arg("maskfasta")
+        .arg("-fi")
+        .arg(&fasta)
+        .arg("-bed")
+        .arg(&bed)
+        .arg("-fo")
+        .arg(&theirs_out)
+        .arg("-soft")
+        .status()
+        .unwrap();
+    assert!(bt_status.success(), "bedtools maskfasta -soft failed");
+    let theirs = std::fs::read(&theirs_out).unwrap();
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("maskfasta")
+            .arg("--fasta")
+            .arg(&fasta)
+            .arg("--bed")
+            .arg(&bed)
+            .arg("--soft");
+        c
+    });
+
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        String::from_utf8_lossy(&theirs),
+        "maskfasta soft-mask mismatch"
+    );
+}
+
+// `shuffle` invariant tests (RNG differs from bedtools, so no byte-diff):
+// - Same number of output intervals as input.
+// - Each output interval has the same length as its input.
+// - Each output interval lands within its chrom's bounds.
+#[test]
+fn shuffle_invariants() {
+    let input = golden("shuffle_in.bed");
+    let genome = golden("shuffle_genome.txt");
+
+    if !input.exists() || !genome.exists() {
+        eprintln!("skipping: shuffle fixtures not found");
+        return;
+    }
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("shuffle")
+            .arg("-i")
+            .arg(&input)
+            .arg("-g")
+            .arg(&genome)
+            .arg("--seed")
+            .arg("1");
+        c
+    });
+
+    // Parse input intervals.
+    let input_bytes = std::fs::read(&input).unwrap();
+    let input_ivs: Vec<(String, u64, u64)> = String::from_utf8_lossy(&input_bytes)
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let mut f = l.splitn(4, '\t');
+            let c = f.next().unwrap().to_string();
+            let s: u64 = f.next().unwrap().parse().unwrap();
+            let e: u64 = f.next().unwrap().parse().unwrap();
+            (c, s, e)
+        })
+        .collect();
+
+    // Parse genome.
+    let genome_bytes = std::fs::read(&genome).unwrap();
+    let genome_map: std::collections::HashMap<String, u64> = String::from_utf8_lossy(&genome_bytes)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let mut f = l.splitn(3, '\t');
+            let c = f.next().unwrap().to_string();
+            let len: u64 = f.next().unwrap().parse().unwrap();
+            (c, len)
+        })
+        .collect();
+
+    // Parse output intervals.
+    let out_ivs: Vec<(String, u64, u64)> = String::from_utf8_lossy(&ours)
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let mut f = l.splitn(4, '\t');
+            let c = f.next().unwrap().to_string();
+            let s: u64 = f.next().unwrap().parse().unwrap();
+            let e: u64 = f.next().unwrap().parse().unwrap();
+            (c, s, e)
+        })
+        .collect();
+
+    assert_eq!(
+        out_ivs.len(),
+        input_ivs.len(),
+        "shuffle: output interval count mismatch"
+    );
+
+    for (i, ((ic, is, ie), (oc, os, oe))) in input_ivs.iter().zip(out_ivs.iter()).enumerate() {
+        let in_len = ie - is;
+        let out_len = oe - os;
+        assert_eq!(
+            in_len, out_len,
+            "interval {i}: length changed {in_len} -> {out_len}"
+        );
+
+        let chrom_len = *genome_map
+            .get(oc)
+            .unwrap_or_else(|| panic!("interval {i}: output chrom '{oc}' not in genome"));
+        assert!(
+            *oe <= chrom_len,
+            "interval {i}: output {oc}:{os}-{oe} exceeds chrom len {chrom_len}"
+        );
+        let _ = ic; // input chrom not checked here (no -chrom flag)
+    }
+}
+
+// `shuffle --excl`: output intervals must not overlap excluded regions.
+#[test]
+fn shuffle_excl_invariant() {
+    let input = golden("shuffle_in.bed");
+    let genome = golden("shuffle_genome.txt");
+    let excl = golden("shuffle_excl.bed");
+
+    if !input.exists() || !genome.exists() || !excl.exists() {
+        eprintln!("skipping: shuffle_excl fixtures not found");
+        return;
+    }
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("shuffle")
+            .arg("-i")
+            .arg(&input)
+            .arg("-g")
+            .arg(&genome)
+            .arg("--excl")
+            .arg(&excl)
+            .arg("--seed")
+            .arg("42");
+        c
+    });
+
+    // Parse excluded intervals.
+    let excl_bytes = std::fs::read(&excl).unwrap();
+    let excl_map: std::collections::HashMap<String, Vec<(u64, u64)>> = {
+        let mut m: std::collections::HashMap<String, Vec<(u64, u64)>> =
+            std::collections::HashMap::new();
+        for line in String::from_utf8_lossy(&excl_bytes).lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut f = line.splitn(4, '\t');
+            let c = f.next().unwrap().to_string();
+            let s: u64 = f.next().unwrap().parse().unwrap();
+            let e: u64 = f.next().unwrap().parse().unwrap();
+            m.entry(c).or_default().push((s, e));
+        }
+        m
+    };
+
+    for line in String::from_utf8_lossy(&ours).lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut f = line.splitn(4, '\t');
+        let chrom = f.next().unwrap().to_string();
+        let start: u64 = f.next().unwrap().parse().unwrap();
+        let end: u64 = f.next().unwrap().parse().unwrap();
+
+        if let Some(ivs) = excl_map.get(&chrom) {
+            for &(es, ee) in ivs {
+                assert!(
+                    end <= es || start >= ee,
+                    "shuffle --excl: output {chrom}:{start}-{end} overlaps excluded {chrom}:{es}-{ee}"
+                );
+            }
+        }
+    }
+}
+
+// `shuffle --chrom`: each output interval must stay on the same chromosome.
+#[test]
+fn shuffle_chrom_invariant() {
+    let input = golden("shuffle_in.bed");
+    let genome = golden("shuffle_genome.txt");
+
+    if !input.exists() || !genome.exists() {
+        eprintln!("skipping: shuffle fixtures not found");
+        return;
+    }
+
+    let ours = run({
+        let mut c = bin();
+        c.arg("shuffle")
+            .arg("-i")
+            .arg(&input)
+            .arg("-g")
+            .arg(&genome)
+            .arg("--chrom")
+            .arg("--seed")
+            .arg("7");
+        c
+    });
+
+    let input_bytes = std::fs::read(&input).unwrap();
+    let input_chroms: Vec<String> = String::from_utf8_lossy(&input_bytes)
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split('\t').next().unwrap().to_string())
+        .collect();
+
+    let out_chroms: Vec<String> = String::from_utf8_lossy(&ours)
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split('\t').next().unwrap().to_string())
+        .collect();
+
+    assert_eq!(
+        input_chroms.len(),
+        out_chroms.len(),
+        "shuffle --chrom: count mismatch"
+    );
+
+    for (i, (ic, oc)) in input_chroms.iter().zip(out_chroms.iter()).enumerate() {
+        assert_eq!(
+            ic, oc,
+            "interval {i}: --chrom violated: input chrom '{ic}' != output chrom '{oc}'"
+        );
+    }
+}
