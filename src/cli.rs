@@ -255,10 +255,10 @@ enum Command {
     /// Disjoint-interval union of multiple sorted BED files with coverage annotation
     Multiinter {
         /// Input BED files (must be sorted)
-        #[arg(short = 'i', long, num_args = 1.., value_delimiter = ' ')]
+        #[arg(short = 'i', long, num_args = 1..)]
         inputs: Vec<PathBuf>,
         /// Optional names for each file (must match number of -i files)
-        #[arg(long, num_args = 1.., value_delimiter = ' ')]
+        #[arg(long, num_args = 1..)]
         names: Option<Vec<String>>,
         #[arg(short = 'o', long, default_value = "-")]
         output: String,
@@ -445,10 +445,10 @@ enum Command {
     /// Combine N bedGraph files into a disjoint-segment matrix
     Unionbedg {
         /// Input bedGraph files
-        #[arg(short = 'i', long, num_args = 1.., value_delimiter = ' ')]
+        #[arg(short = 'i', long, num_args = 1..)]
         inputs: Vec<PathBuf>,
         /// Optional column names (must match number of -i files)
-        #[arg(long, num_args = 1.., value_delimiter = ' ')]
+        #[arg(long, num_args = 1..)]
         names: Option<Vec<String>>,
         /// Print a header line with column names
         #[arg(long)]
@@ -484,11 +484,11 @@ enum Command {
 
 fn open_output(path: &str) -> Result<Box<dyn std::io::Write>> {
     if path == "-" {
-        Ok(Box::new(std::io::stdout().lock()))
+        Ok(Box::new(std::io::BufWriter::new(std::io::stdout().lock())))
     } else {
-        Ok(Box::new(
+        Ok(Box::new(std::io::BufWriter::new(
             std::fs::File::create(path).map_err(RsomicsError::Io)?,
-        ))
+        )))
     }
 }
 
