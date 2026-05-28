@@ -12,6 +12,11 @@ description = "BED utility toolkit — sort, merge, intersect, subtract, complem
 name = "rsomics-bed-utils"
 path = "src/main.rs"
 
+
+[lib]
+name = "rsomics_bed_utils"
+path = "src/lib.rs"
+doctest = false
 [dependencies]
 rsomics-common = { version = "0.6" }
 rsomics-help = { version = "0.3" }
